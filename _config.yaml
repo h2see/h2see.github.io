@@ -1,0 +1,4 @@
+exclude:
+- .gitignore
+- README.md
+- encrypt/

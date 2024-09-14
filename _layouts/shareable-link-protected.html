@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page.url | split: '/' | reverse | second }}</title>
+    <script>
+        function decodeBase64(encoded) {
+            return Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+        }
+
+        async function loadEncryptedContent(filePath) {
+            const response = await fetch(filePath);
+            if (response.ok) {
+                return await response.json(); // Parse as JSON
+            } else {
+                document.body.innerHTML = "<h1>Error</h1><p>Unable to load content.</p>";
+                return null;
+            }
+        }
+
+        async function deriveKeyFromSecret(secret, saltBase64) {
+            // Encode the password (secret) as a Uint8Array
+            const passwordBytes = new TextEncoder().encode(secret);
+            
+            // Decode salt from base64
+            const saltBytes = decodeBase64(saltBase64);
+
+            // Perform PBKDF2 key derivation
+            const keyMaterial = await window.crypto.subtle.importKey(
+                "raw", 
+                passwordBytes, 
+                { name: "PBKDF2" }, 
+                false, 
+                ["deriveKey"]
+            );
+            
+            // Derive AES-GCM key (256 bits)
+            const key = await window.crypto.subtle.deriveKey(
+                {
+                    name: "PBKDF2",
+                    salt: saltBytes,
+                    iterations: 480000,
+                    hash: "SHA-256"
+                },
+                keyMaterial,
+                { name: "AES-GCM", length: 256 },
+                false,
+                ["decrypt"]
+            );
+            
+            return key;
+        }
+
+        async function decryptContent(encryptedDocumentBase64, ivBase64, key) {
+        try {
+            // Decode encrypted document and IV from base64
+            const encryptedBytes = decodeBase64(encryptedDocumentBase64);
+            const iv = decodeBase64(ivBase64);
+
+            // Perform AES-GCM decryption using the derived key and provided IV
+            const decrypted = await window.crypto.subtle.decrypt(
+                {
+                    name: "AES-GCM",
+                    iv: iv,
+                    tagLength: 128 // GCM uses a 128-bit (16 bytes) authentication tag, handled automatically
+                },
+                key,
+                encryptedBytes // Pass the entire encrypted data (ciphertext + authTag)
+            );
+
+            // Convert decrypted data from Uint8Array to a UTF-8 string
+            const decoder = new TextDecoder();
+            return decoder.decode(decrypted);
+        } catch (e) {
+            console.error('Decryption error:', e);
+            return null;
+        }
+}
+
+
+        window.onload = async function () {
+            const secret = window.location.hash.substring(1);
+            if (!secret) {
+                document.body.innerHTML = "<h1>This page is protected.</h1><p>Please add the URL fragment secret and refresh this page.</p>";
+                return;
+            }
+
+            const encryptedContent = await loadEncryptedContent('index-protected.json');
+            if (!encryptedContent) return;
+
+            try {
+                // Extract data from the JSON file
+                const { document: encryptedDocument, iv, salt } = encryptedContent;
+
+                // Derive key from the secret (password) provided in the URL fragment
+                const key = await deriveKeyFromSecret(secret, salt);
+
+                // Decrypt the content
+                const decryptedContent = await decryptContent(encryptedDocument, iv, key);
+
+                if (decryptedContent) {
+                    document.open();
+                    document.write(decryptedContent);
+                    document.close();
+                } else {
+                    document.body.innerHTML = "<h1>Access Denied</h1><p>Invalid secret provided or decryption failed.</p>";
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.body.innerHTML = "<h1>Error</h1><p>Failed to load or decrypt content.</p>";
+            }
+        };
+    </script>
+</head>
+<body>
+    {{ content }}
+</body>
+</html>
